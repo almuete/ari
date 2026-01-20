@@ -16,7 +16,7 @@ export async function POST(req: Request) {
       { transcript },
       { provider: brainProvider, model: brainModel }
     );
-    const audio = await textToSpeech(replyText, { provider: "openai" });
+    const audio = await textToSpeech(replyText, { provider: "google" });
 
     return NextResponse.json({
       transcript,

@@ -2,6 +2,7 @@
 import "server-only";
 import type { AudioFormat, TTSProvider, TTSResponse } from "@/types/tts";
 import { generateOpenAITTS } from "./providers/openai";
+import { generateGoogleTTS } from "./providers/google";
 
 export interface TTSOptions {
   provider?: TTSProvider;
@@ -9,11 +10,19 @@ export interface TTSOptions {
   format?: AudioFormat;
 }
 
-const DEFAULTS = {
+const DEFAULTS_OPENAI = {
   provider: "openai" as const,
   voice: "alloy",
   format: "mp3" as const,
 };
+
+const DEFAULTS_GEMINI = {
+  provider: "google" as const,
+  voice: "Kore",
+  format: "wav" as const,
+};
+
+const DEFAULTS = DEFAULTS_GEMINI; // DEFAULTS_GEMINI || DEFAULTS_OPENAI;
 
 export async function textToSpeech(
   text: string,
@@ -31,7 +40,7 @@ export async function textToSpeech(
       return generateOpenAITTS(trimmed, { voice, format });
 
     case "google":
-      throw new Error("Google TTS not implemented yet");
+      return generateGoogleTTS(trimmed, { voice, format });
 
     default: {
       const _exhaustive: never = provider;
