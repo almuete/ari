@@ -7,6 +7,7 @@ import { BiUser } from "react-icons/bi";
 
 const SILENCE_RESET_MS = 1000;
 const RESTART_DELAY_MS = 250;
+const PIPELINE_DEBOUNCE_MS = 900;
 const FATAL_ERRORS = new Set([
   "not-allowed",
   "service-not-allowed",
@@ -83,6 +84,7 @@ export default function SpeechToText() {
   const shouldBeListeningRef = useRef(false);
   const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pipelineTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const finalTranscriptRef = useRef("");
   const interimTranscriptRef = useRef("");
 
@@ -117,6 +119,13 @@ export default function SpeechToText() {
     if (silenceTimerRef.current) {
       clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
+    }
+  };
+
+  const clearPipelineTimer = () => {
+    if (pipelineTimerRef.current) {
+      clearTimeout(pipelineTimerRef.current);
+      pipelineTimerRef.current = null;
     }
   };
 
@@ -167,6 +176,7 @@ export default function SpeechToText() {
       interimTranscriptRef.current = "";
       setInterimText("");
       clearSilenceTimer();
+      clearPipelineTimer();
 
       // Mobile browsers often stop recognition after short pauses.
       if (!shouldBeListeningRef.current) {
@@ -219,9 +229,11 @@ export default function SpeechToText() {
         ).trim();
         setText(finalTranscriptRef.current);
 
-        // If you want to trigger when user finishes a sentence,
-        // we’ll send on each new final chunk (debounced by lastSentTranscriptRef).
-        void sendTranscriptToPipeline(finalTranscriptRef.current);
+        // Debounce: send once the user pauses briefly (prevents Gemini 429 bursts).
+        clearPipelineTimer();
+        pipelineTimerRef.current = setTimeout(() => {
+          void sendTranscriptToPipeline(finalTranscriptRef.current);
+        }, PIPELINE_DEBOUNCE_MS);
       }
 
       const nextInterim = interimChunk.trim();
@@ -300,6 +312,7 @@ export default function SpeechToText() {
       shouldBeListeningRef.current = false;
       clearSilenceTimer();
       clearRestartTimer();
+      clearPipelineTimer();
       recognitionRef.current?.abort();
       cleanupAudio();
     };

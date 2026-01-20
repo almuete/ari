@@ -26,6 +26,7 @@ export default function VoiceWave({
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const rafRef = useRef<number | null>(null);
+  const drawRef = useRef<(() => void) | null>(null);
   const dataRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
   const cssSizeRef = useRef(size);
   const colorRef = useRef(color);
@@ -208,8 +209,13 @@ export default function VoiceWave({
     // reset alpha for safety
     ctx.globalAlpha = 1;
 
-    rafRef.current = requestAnimationFrame(draw);
+    // Avoid self-referencing `draw` directly (eslint immutability rule).
+    rafRef.current = requestAnimationFrame(() => drawRef.current?.());
   }, []);
+
+  useEffect(() => {
+    drawRef.current = draw;
+  }, [draw]);
 
   useEffect(() => {
     if (!active) {
@@ -243,7 +249,10 @@ export default function VoiceWave({
 
         streamRef.current = stream;
 
-        const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const AudioContextCtor =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        const audioCtx = new AudioContextCtor();
         audioCtxRef.current = audioCtx;
         if (audioCtx.state === "suspended") {
           // iOS often starts suspended; this is still usually within the user gesture path.

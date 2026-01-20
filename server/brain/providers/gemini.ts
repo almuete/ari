@@ -1,5 +1,10 @@
 import "server-only";
+import { GoogleGenAI } from "@google/genai";
 import { BRAIN_OUTPUT_STYLE_PROMPT, BRAIN_SYSTEM_PROMPT } from "../prompts";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object";
+}
 
 function buildSystemInstruction(args: { extraContext?: string }) {
   const extra = args.extraContext?.trim()
@@ -9,14 +14,29 @@ function buildSystemInstruction(args: { extraContext?: string }) {
 }
 
 function extractTextParts(value: unknown): string {
-  if (!value || typeof value !== "object") return "";
-  const anyVal = value as any;
-  const parts = anyVal.parts;
+  if (!isRecord(value)) return "";
+  const parts = value.parts;
   if (!Array.isArray(parts)) return "";
   return parts
-    .map((p: any) => (typeof p?.text === "string" ? p.text : ""))
+    .map((p) => (isRecord(p) && typeof p.text === "string" ? p.text : ""))
     .join("")
     .trim();
+}
+
+function extractResponseText(value: unknown): string {
+  if (!isRecord(value)) return "";
+
+  // SDK convenience accessor (common in @google/genai)
+  if (typeof value.text === "string" && value.text.trim()) {
+    return value.text.trim();
+  }
+
+  // Fallback to candidate parsing (mirrors REST response shape)
+  const candidates = value.candidates;
+  const candidate = Array.isArray(candidates) ? candidates[0] : null;
+  const content = isRecord(candidate) ? candidate.content : null;
+  const text = extractTextParts(content);
+  return text;
 }
 
 export interface GeminiBrainOptions {
@@ -31,41 +51,27 @@ export async function generateGeminiBrainReply(
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("Missing GEMINI_API_KEY environment variable");
 
-  const model = options.model ?? "gemini-1.5-flash";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-    model
-  )}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const model = options.model ?? "gemini-3-flash-preview";
+  const ai = new GoogleGenAI({ apiKey });
 
-  const body = {
-    systemInstruction: {
-      parts: [{ text: buildSystemInstruction({ extraContext: options.extraContext }) }],
-    },
-    contents: [
-      {
-        role: "user",
-        parts: [{ text: options.transcript.trim() }],
+  let response: unknown;
+  try {
+    response = await ai.models.generateContent({
+      model,
+      contents: options.transcript.trim(),
+      config: {
+        systemInstruction: buildSystemInstruction({ extraContext: options.extraContext }),
       },
-    ],
-  };
-
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-
-  const data = (await resp.json().catch(() => null)) as any;
-
-  if (!resp.ok) {
+    });
+  } catch (err) {
     const message =
-      typeof data?.error?.message === "string"
-        ? data.error.message
-        : `Gemini request failed (${resp.status})`;
+      err instanceof Error && err.message
+        ? err.message
+        : "Gemini request failed (unknown error)";
     throw new Error(message);
   }
 
-  const candidate = Array.isArray(data?.candidates) ? data.candidates[0] : null;
-  const text = extractTextParts(candidate?.content);
+  const text = extractResponseText(response);
 
   if (!text) throw new Error("Brain returned empty response");
   return text;

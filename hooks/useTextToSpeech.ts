@@ -1,7 +1,7 @@
 // hooks/useTextToSpeech.ts
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AudioFormat, TTSProvider } from "@/types/tts";
 import { ttsClient } from "@/services/client/tts.client";
 
@@ -11,6 +11,7 @@ export function useTextToSpeech() {
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const cleanupAudioUrl = useCallback(() => {
     setAudioUrl((prev) => {
@@ -60,21 +61,35 @@ export function useTextToSpeech() {
     [cleanupAudioUrl]
   );
 
-  const audio = useMemo(() => {
-    if (!audioUrl) return null;
-    return new Audio(audioUrl);
+  useEffect(() => {
+    const current = audioRef.current;
+    if (current) {
+      current.pause();
+      audioRef.current = null;
+    }
+
+    if (!audioUrl) return;
+    audioRef.current = new Audio(audioUrl);
+
+    return () => {
+      const a = audioRef.current;
+      if (a) a.pause();
+      audioRef.current = null;
+    };
   }, [audioUrl]);
 
   const play = useCallback(() => {
+    const audio = audioRef.current;
     if (!audio) return;
     void audio.play();
-  }, [audio]);
+  }, []);
 
   const stop = useCallback(() => {
+    const audio = audioRef.current;
     if (!audio) return;
     audio.pause();
     audio.currentTime = 0;
-  }, [audio]);
+  }, []);
 
   return {
     status,

@@ -3,7 +3,6 @@ import { buildBrainMessages } from "./prompts";
 import type { BrainProvider } from "@/types/brain";
 import { generateOpenAIBrainReply } from "./providers/openai";
 import { generateGeminiBrainReply } from "./providers/gemini";
-import { console } from "inspector";
 
 function normalizeProvider(value: string | undefined): BrainProvider {
   return value === "openai" || value === "gemini" ? value : "openai";
