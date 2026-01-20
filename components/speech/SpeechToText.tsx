@@ -2,6 +2,10 @@
 
 import React, { useEffect, useRef, useState } from "react";
 
+const SILENCE_RESET_MS = 1000;
+const RESTART_DELAY_MS = 250;
+const FATAL_ERRORS = new Set(["not-allowed", "service-not-allowed", "audio-capture", "network"]);
+
 declare global {
   type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
 
@@ -49,9 +53,8 @@ const SpeechToText = () => {
   const shouldBeListeningRef = useRef(false);
   const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const SILENCE_RESET_MS = 1000;
-  const RESTART_DELAY_MS = 250;
   const finalTranscriptRef = useRef("");
+  const interimTranscriptRef = useRef("");
 
   const [supported, setSupported] = useState(true);
   const [desiredListening, setDesiredListening] = useState(false);
@@ -81,6 +84,7 @@ const SpeechToText = () => {
       // Keep recognition running so the next utterance starts fresh.
       if (!shouldBeListeningRef.current) return;
       finalTranscriptRef.current = "";
+      interimTranscriptRef.current = "";
       setText("");
       setInterimText("");
     }, SILENCE_RESET_MS);
@@ -106,6 +110,7 @@ const SpeechToText = () => {
 
     recognition.onend = () => {
       setEngineActive(false);
+      interimTranscriptRef.current = "";
       setInterimText("");
       clearSilenceTimer();
 
@@ -126,13 +131,13 @@ const SpeechToText = () => {
     recognition.onerror = (e) => {
       setError(e?.error ?? "speech_recognition_error");
       setEngineActive(false);
+      interimTranscriptRef.current = "";
       setInterimText("");
       clearSilenceTimer();
       clearRestartTimer();
 
       // If permission/network errors happen, don't spin restart loops.
-      const fatalErrors = new Set(["not-allowed", "service-not-allowed", "audio-capture", "network"]);
-      if (fatalErrors.has(e?.error)) {
+      if (FATAL_ERRORS.has(e?.error)) {
         shouldBeListeningRef.current = false;
         setDesiredListening(false);
       }
@@ -157,7 +162,11 @@ const SpeechToText = () => {
         setText(finalTranscriptRef.current);
       }
 
-      setInterimText(interimChunk.trim());
+      const nextInterim = interimChunk.trim();
+      if (nextInterim !== interimTranscriptRef.current) {
+        interimTranscriptRef.current = nextInterim;
+        setInterimText(nextInterim);
+      }
       armSilenceResetTimer();
     };
 
@@ -181,7 +190,7 @@ const SpeechToText = () => {
     };
   }, []);
 
-  const start = () => {
+  const start = React.useCallback(() => {
     setDesiredListening(true);
     shouldBeListeningRef.current = true;
     setError(null);
@@ -192,15 +201,15 @@ const SpeechToText = () => {
     } catch {
       // Some browsers throw if start() is called while already started.
     }
-  };
+  }, []);
 
-  const stop = () => {
+  const stop = React.useCallback(() => {
     setDesiredListening(false);
     shouldBeListeningRef.current = false;
     clearSilenceTimer();
     clearRestartTimer();
     recognitionRef.current?.stop();
-  };
+  }, []);
 
   if (!supported) {
     return <div>Speech recognition not supported in this browser.</div>;
@@ -215,17 +224,6 @@ const SpeechToText = () => {
         <button type="button" onClick={stop} disabled={!desiredListening}>
           Stop
         </button>{" "}
-        <button
-          type="button"
-          onClick={() => {
-            finalTranscriptRef.current = "";
-            setText("");
-            setInterimText("");
-            setError(null);
-          }}
-        >
-          Clear
-        </button>
       </div>
 
       {error ? <div style={{ color: "crimson", marginBottom: 8 }}>Error: {error}</div> : null}
