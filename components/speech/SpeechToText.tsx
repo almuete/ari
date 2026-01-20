@@ -2,6 +2,8 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import VoiceWave from "./VoiceWave";
+import { TbRobot } from "react-icons/tb";
+import { BiUser } from "react-icons/bi";
 
 const SILENCE_RESET_MS = 1000;
 const RESTART_DELAY_MS = 250;
@@ -267,22 +269,22 @@ export default function SpeechToText() {
       const url = base64ToObjectUrl(data.audioBase64, data.format);
       setAudioUrl(url);
 
-      const audio = new Audio(url);
-      audioRef.current = audio;
-
       setStatus("ready");
-
-      // autoplay (optional) — remove if you prefer manual play
-      try {
-        await audio.play();
-      } catch {
-        // autoplay can be blocked; user can press Play
-      }
     } catch (e) {
       setStatus("error");
       setError(e instanceof Error ? e.message : "Unknown error");
     }
   };
+
+  // Try autoplay when audio becomes available (may be blocked by browser policy).
+  useEffect(() => {
+    if (!audioUrl) return;
+    const el = audioRef.current;
+    if (!el) return;
+    void el.play().catch(() => {
+      // ignore autoplay blocks; user can use native controls
+    });
+  }, [audioUrl]);
 
   useEffect(() => {
     const hasApi =
@@ -330,17 +332,6 @@ export default function SpeechToText() {
     setStatus("idle");
   }, []);
 
-  const play = () => {
-    if (!audioRef.current) return;
-    void audioRef.current.play();
-  };
-
-  const stopAudio = () => {
-    if (!audioRef.current) return;
-    audioRef.current.pause();
-    audioRef.current.currentTime = 0;
-  };
-
   if (!supported) {
     return <div>Speech recognition not supported in this browser.</div>;
   }
@@ -382,47 +373,31 @@ export default function SpeechToText() {
         <div className="text-red-600 text-sm">Error: {error}</div>
       ) : null}
 
-      {(text || interimText) && (
+      {(text) && (
         <div className="w-full max-w-2xl bg-gray-100 p-4 rounded-lg min-h-[60px]">
-          <div className="font-medium">Transcript</div>
-          <div>
-            {text}
-            {interimText ? (
-              <span className="opacity-60"> {interimText}</span>
-            ) : null}
+            <div className="flex items-center gap-2">
+              <BiUser className="text-xl" />
+              <div className="normal-case">{text}</div>
           </div>
         </div>
       )}
 
       {replyText ? (
         <div className="w-full max-w-2xl bg-gray-100 p-4 rounded-lg">
-          <div className="font-medium">Brain reply</div>
-          <div>{replyText}</div>
-        </div>
-      ) : null}
-
-      {audioUrl ? (
-        <div className="w-full max-w-2xl space-y-2">
-          <div className="flex gap-2 justify-center">
-            <button
-              className="border rounded px-3 py-2"
-              onClick={play}
-              disabled={!audioUrl}
-            >
-              Play
-            </button>
-            <button
-              className="border rounded px-3 py-2"
-              onClick={stopAudio}
-              disabled={!audioUrl}
-            >
-              Stop
-            </button>
+          <div className="flex items-center gap-2">
+              <TbRobot className="text-xl" />
+              <div className="normal-case">{replyText}</div>
           </div>
 
-          <audio controls src={audioUrl} className="w-full" />
+          {audioUrl ? (
+            <div className="w-full space-y-2 hidden">
+              <audio ref={audioRef} controls src={audioUrl} className="w-full" />
+            </div>
+          ) : null}
         </div>
       ) : null}
+
+      
     </div>
   );
 }
