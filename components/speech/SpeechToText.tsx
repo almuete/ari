@@ -225,7 +225,7 @@ const SpeechToText = () => {
       >
         <VoiceWave
           active={engineActive || true}
-          color="#FF9500"
+          color={engineActive ? "#FF9500" : "green"}
           glow
           sensitivity={8}
           size={500}
