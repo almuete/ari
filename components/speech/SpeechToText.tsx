@@ -253,8 +253,8 @@ export default function SpeechToText() {
       const res = await fetch("/api/stt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript: trimmed }),
-      });
+          body: JSON.stringify({ transcript: trimmed }),
+        });
 
       const data = (await res.json()) as SpeechPipelineResponse & {
         error?: string;

@@ -6,13 +6,16 @@ export const runtime = "nodejs";
 
 export async function POST(req: Request) {
   try {
-    const { transcript } = await req.json();
+    const { transcript, brainProvider, brainModel } = await req.json();
 
     if (!transcript || !transcript.trim()) {
       return NextResponse.json({ error: "transcript is required" }, { status: 400 });
     }
 
-    const replyText = await brain({ transcript });
+    const replyText = await brain(
+      { transcript },
+      { provider: brainProvider, model: brainModel }
+    );
     const audio = await textToSpeech(replyText, { provider: "openai" });
 
     return NextResponse.json({
