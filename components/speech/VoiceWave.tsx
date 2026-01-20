@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useRef } from "react";
+import React, { useCallback, useEffect, useRef } from "react";
 
 type VoiceWaveProps = {
   active: boolean;
@@ -34,11 +34,6 @@ export default function VoiceWave({
 
   // simple smoothing for "energy" so it feels Jarvis-y
   const energyRef = useRef(0);
-
-  const supports = useMemo(
-    () => typeof window !== "undefined" && !!navigator.mediaDevices?.getUserMedia,
-    []
-  );
 
   useEffect(() => {
     colorRef.current = color;
@@ -217,9 +212,13 @@ export default function VoiceWave({
   }, []);
 
   useEffect(() => {
-    if (!supports) return;
-
     if (!active) {
+      stopAll();
+      return;
+    }
+
+    // Render stays consistent for SSR hydration; we only feature-detect in effects.
+    if (!navigator.mediaDevices?.getUserMedia) {
       stopAll();
       return;
     }
@@ -258,7 +257,7 @@ export default function VoiceWave({
         analyserRef.current = analyser;
 
         analyser.fftSize = 2048;
-        analyser.smoothingTimeConstant = 0.86;
+        analyser.smoothingTimeConstant = 0.60;
 
         source.connect(analyser);
 
@@ -272,9 +271,7 @@ export default function VoiceWave({
       cancelled = true;
       stopAll();
     };
-  }, [active, supports, draw, resizeCanvas, stopAll]);
-
-  if (!supports) return null;
+  }, [active, draw, resizeCanvas, stopAll]);
 
   return (
     <div className={className} style={{ width: size, height: size }}>

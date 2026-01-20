@@ -218,23 +218,20 @@ const SpeechToText = () => {
 
   return (
     <div className=" flex flex-col items-center justify-center">
-      <div style={{ marginBottom: 8 }}>
-        <button type="button" onClick={start} disabled={desiredListening}>
-          Start
-        </button>{" "}
-        <button type="button" onClick={stop} disabled={!desiredListening}>
-          Stop
-        </button>{" "}
-      </div>
-
-      <VoiceWave
-        active={desiredListening}
-        color="#FF9500"
-        glow
-        sensitivity={8}
-        size={500}
-        className="mb-3 rounded-full"
-      />
+      <button
+        type="button"
+        onClick={desiredListening ? stop : start}
+        className="cursor-pointer mb-3 rounded-full"
+      >
+        <VoiceWave
+          active={engineActive || true}
+          color="#FF9500"
+          glow
+          sensitivity={8}
+          size={500}
+          className="mb-3 rounded-full"
+        />
+      </button>
 
       {error ? <div style={{ color: "crimson", marginBottom: 8 }}>Error: {error}</div> : null}
 
@@ -244,10 +241,8 @@ const SpeechToText = () => {
             {text}
             {interimText ? <span style={{ opacity: 0.6 }}> {interimText}</span> : null}
           </>
-        ) : desiredListening ? (
+        ) : desiredListening && (
           <span style={{ opacity: 0.7 }}>{engineActive ? "Listening…" : "Starting…"}</span>
-        ) : (
-          "Press Start and speak…"
         )}
       </div>
     </div>
