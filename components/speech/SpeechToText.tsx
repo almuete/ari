@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
+import VoiceWave from "./VoiceWave";
 
 const SILENCE_RESET_MS = 1000;
 const RESTART_DELAY_MS = 250;
@@ -216,7 +217,7 @@ const SpeechToText = () => {
   }
 
   return (
-    <div>
+    <div className=" flex flex-col items-center justify-center">
       <div style={{ marginBottom: 8 }}>
         <button type="button" onClick={start} disabled={desiredListening}>
           Start
@@ -225,6 +226,15 @@ const SpeechToText = () => {
           Stop
         </button>{" "}
       </div>
+
+      <VoiceWave
+        active={desiredListening}
+        color="#FF9500"
+        glow
+        sensitivity={8}
+        size={500}
+        className="mb-3 rounded-full"
+      />
 
       {error ? <div style={{ color: "crimson", marginBottom: 8 }}>Error: {error}</div> : null}
 
