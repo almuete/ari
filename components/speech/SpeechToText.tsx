@@ -215,7 +215,7 @@ const SpeechToText = () => {
   if (!supported) {
     return <div>Speech recognition not supported in this browser.</div>;
   }
-
+  
   return (
     <div className=" flex flex-col items-center justify-center">
       <button
@@ -235,16 +235,12 @@ const SpeechToText = () => {
 
       {error ? <div style={{ color: "crimson", marginBottom: 8 }}>Error: {error}</div> : null}
 
-      <div>
-        {(text || interimText) ? (
-          <>
-            {text}
-            {interimText ? <span style={{ opacity: 0.6 }}> {interimText}</span> : null}
-          </>
-        ) : desiredListening && (
-          <span style={{ opacity: 0.7 }}>{engineActive ? "Listening…" : "Starting…"}</span>
-        )}
-      </div>
+      {(text || interimText) && (
+        <div className="bg-gray-100 p-4 rounded-lg min-h-[50px]">
+          {text}
+          {interimText ? <span style={{ opacity: 0.6 }}> {interimText}</span> : ""}
+        </div>
+      )}
     </div>
   );
 };
