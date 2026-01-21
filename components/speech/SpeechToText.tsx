@@ -403,6 +403,7 @@ export default function SpeechToText() {
 
           {audioUrl ? (
             <div className="w-full space-y-2">
+              {audioUrl}
               <audio ref={audioRef} controls src={audioUrl} className="w-full" />
             </div>
           ) : null}
