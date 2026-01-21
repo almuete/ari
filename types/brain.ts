@@ -1,5 +1,5 @@
 // types/brain.ts
-export type BrainProvider = "openai" | "gemini";
+export type BrainProvider = "openai" | "google";
 
 export interface BrainRequest {
   transcript: string;

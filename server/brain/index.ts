@@ -5,7 +5,7 @@ import { generateOpenAIBrainReply } from "./providers/openai";
 import { generateGeminiBrainReply } from "./providers/gemini";
 
 function normalizeProvider(value: string | undefined): BrainProvider {
-  return value === "openai" || value === "gemini" ? value : "openai";
+  return value === "openai" || value === "google" ? value : "openai";
 }
 
 export interface BrainInput {
@@ -49,7 +49,7 @@ export async function brain(input: BrainInput, options: BrainOptions = {}) {
         model: options.model,
       });
 
-    case "gemini":
+    case "google":
       return generateGeminiBrainReply({
         transcript,
         extraContext: input.extraContext,

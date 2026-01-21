@@ -368,7 +368,6 @@ export default function SpeechToText() {
       </button>
 
       <div className="text-sm opacity-80">
-        Status:{" "}
         <span className="font-medium">
           {status === "listening"
             ? "Listening"
