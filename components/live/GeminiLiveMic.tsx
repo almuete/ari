@@ -232,6 +232,7 @@ export default function GeminiLiveMic() {
             model: MODEL,
             generation_config: {
               response_modalities: ["AUDIO"],
+              speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Orus" } } }
             },
             // Opt-in: receive transcriptions for input and output audio.
             input_audio_transcription: {},
