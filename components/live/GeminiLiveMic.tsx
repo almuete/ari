@@ -540,12 +540,12 @@ export default function GeminiLiveMic() {
               />
             </button>
 
-            <span>
-              {connected ? (streaming ? "Streaming" : "Connected") : "Disconnected"}
+            <span className="text-sm text-gray-500">
+              {connected ? (streaming ? "Streaming" : "") : ""}
             </span>
           </div>
 
-        <div className="  top-0 right-0 -z-10">
+        <div className="relative">
           
           <div className="border border-gray-200 rounded-md p-2">
             {logs.length === 0 ? (
@@ -564,10 +564,10 @@ export default function GeminiLiveMic() {
             )}
           </div>
 
-          <div className="text-right">
+          <div className="text-right absolute -top-2 -right-2 ">
             <button
               onClick={() => setLogs([])}
-              className="cursor-pointer text-right"
+              className="cursor-pointer text-right bg-white rounded-full p-2 border border-gray-200"
             >
               <BiRefresh className="text-2xl" />
               
