@@ -16,7 +16,7 @@ const RECEIVE_SAMPLE_RATE = 24000;
 // Send ~20ms frames (16000 * 0.02 = 320 samples)
 const FRAME_SAMPLES = 320;
 
-function base64FromArrayBuffer(buf: ArrayBuffer): string {
+function base64FromArrayBuffer(buf: ArrayBufferLike): string {
   // Browser-safe base64 encoding
   const bytes = new Uint8Array(buf);
   let binary = "";
