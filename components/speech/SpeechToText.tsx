@@ -434,8 +434,7 @@ export default function SpeechToText() {
           </div>
 
           {audioUrl ? (
-            <div className="w-full space-y-2">
-              {audioUrl}
+            <div className="w-full space-y-2 mt-2">
               <audio
                 ref={audioRef}
                 controls
