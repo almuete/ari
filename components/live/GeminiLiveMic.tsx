@@ -113,6 +113,25 @@ const MAPS_FUNCTION_DECLARATIONS = [
   },
 ] as const;
 
+const WEB_FUNCTION_DECLARATIONS = [
+  {
+    name: "web_search",
+    description:
+      "Search the public web for up-to-date information and return relevant results with titles, URLs, and snippets.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "The search query." },
+        max_results: {
+          type: "number",
+          description: "Optional max number of results to return (default 5).",
+        },
+      },
+      required: ["query"],
+    },
+  },
+] as const;
+
 // Per docs: input 16-bit PCM, 16kHz mono; output audio typically 24kHz.
 const SEND_SAMPLE_RATE = 16000;
 const RECEIVE_SAMPLE_RATE = 24000;
@@ -362,8 +381,15 @@ export default function GeminiLiveMic() {
               response_modalities: ["AUDIO"],
               speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Orus" } } }
             },
-            // Enable function tools (Google Maps) for live sessions.
-            tools: [{ function_declarations: MAPS_FUNCTION_DECLARATIONS }],
+            // Enable function tools for live sessions.
+            tools: [
+              {
+                function_declarations: [
+                  ...MAPS_FUNCTION_DECLARATIONS,
+                  ...WEB_FUNCTION_DECLARATIONS,
+                ],
+              },
+            ],
             tool_config: {
               function_calling_config: { mode: "AUTO" },
             },
@@ -378,6 +404,8 @@ export default function GeminiLiveMic() {
                     "You are a helpful and friendly AI assistant.",
                     "You have access to Google Maps tools for geocoding, places search, and directions.",
                     "When you need real-world location info, call the appropriate maps_* tool instead of guessing.",
+                    "You also have access to a web_search tool for up-to-date information. Use it when you need current facts.",
+                    "When using web_search results, cite sources by including the URL in your answer.",
                     "If the user’s location is ambiguous, ask a brief follow-up question.",
                   ].join("\n"),
                 },
@@ -506,6 +534,24 @@ export default function GeminiLiveMic() {
                 return await postJson("/api/maps/directions", { origin, destination, mode });
               }
 
+              if (name === "web_search") {
+                const a = args as
+                  | {
+                      query?: unknown;
+                      max_results?: unknown;
+                      // Back-compat if model sends camelCase anyway
+                      maxResults?: unknown;
+                    }
+                  | undefined;
+                const query = typeof a?.query === "string" ? a.query : "";
+                const maxResults = isFiniteNumber(a?.max_results)
+                  ? a?.max_results
+                  : isFiniteNumber(a?.maxResults)
+                    ? a?.maxResults
+                    : undefined;
+                return await postJson("/api/web/search", { query, maxResults });
+              }
+
               throw new Error(`Unknown tool: ${name}`);
             };
 
@@ -554,6 +600,7 @@ export default function GeminiLiveMic() {
           ]);
           if (inputText && inputText !== lastInputTranscriptRef.current) {
             lastInputTranscriptRef.current = inputText;
+            setInputTranscript(inputText);
             log("info", `[ME] ${inputText}`);
           }
 
@@ -908,6 +955,8 @@ export default function GeminiLiveMic() {
               </ul>
             )}
           </div>
+
+          
 
           <div className="text-right absolute -top-2 -right-2 ">
             <button
