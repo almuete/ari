@@ -475,18 +475,11 @@ export default function LiveMicPage() {
 
           <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button
-              onClick={() => void startMic()}
-              disabled={!connected || streaming}
-              style={{
-                padding: "10px 14px",
-                borderRadius: 10,
-                border: "1px solid #e5e7eb",
-                background: streaming ? "#f3f4f6" : "white",
-                cursor: !connected || streaming ? "not-allowed" : "pointer",
-              }}
+              onClick={streaming ? () => void stopMic() : () => void startMic()}
+              className="cursor-pointer"
             >
               <VoiceWave
-                active={true}
+                active={connected ? (streaming ? true : true) : true}
                 color={streaming ? "#FF9500" : "green"}
                 glow
                 sensitivity={8}
@@ -494,19 +487,7 @@ export default function LiveMicPage() {
                 className="rounded-full"
               />
             </button>
-            <button
-              onClick={() => void stopMic()}
-              disabled={!streaming}
-              style={{
-                padding: "10px 14px",
-                borderRadius: 10,
-                border: "1px solid #e5e7eb",
-                background: !streaming ? "#f3f4f6" : "white",
-                cursor: !streaming ? "not-allowed" : "pointer",
-              }}
-            >
-              Stop Mic
-            </button>
+
 
             <span style={{ fontSize: 12, opacity: 0.7, alignSelf: "center" }}>
               Status:{" "}
