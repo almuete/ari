@@ -6,11 +6,112 @@ import { BiRefresh } from "react-icons/bi";
 
 type LogItem = { t: number; level: "info" | "warn" | "error"; msg: string };
 
+type MapLatLng = { lat: number; lng: number };
+
+type GeminiFunctionCall = {
+  id?: string;
+  name?: string;
+  args?: unknown;
+};
+
 // Ephemeral tokens are supported in v1alpha + constrained endpoint.
 const WS_ENDPOINT =
   "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained";
 
 const MODEL = "models/gemini-2.5-flash-native-audio-preview-12-2025";
+
+const MAPS_FUNCTION_DECLARATIONS = [
+  {
+    name: "maps_geocode",
+    description: "Convert a human address into latitude/longitude (geocoding).",
+    parameters: {
+      type: "object",
+      properties: {
+        address: { type: "string", description: "The address to geocode." },
+      },
+      required: ["address"],
+    },
+  },
+  {
+    name: "maps_search_places",
+    description:
+      "Search places using a text query, optionally biased near a given location.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: 'Search query, e.g. "coffee near Makati".',
+        },
+        location_lat: {
+          type: "number",
+          description:
+            "Optional latitude for location bias (requires location_lng too).",
+        },
+        location_lng: {
+          type: "number",
+          description:
+            "Optional longitude for location bias (requires location_lat too).",
+        },
+        radius_meters: {
+          type: "number",
+          description:
+            "Optional radius in meters for location-bias searches (e.g. 2000).",
+        },
+        max_results: {
+          type: "number",
+          description: "Optional max number of results to return (default 5).",
+        },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "maps_directions",
+    description:
+      "Get route directions between an origin and destination (driving/walking/etc).",
+    parameters: {
+      type: "object",
+      properties: {
+        origin_address: {
+          type: "string",
+          description:
+            "Origin address string. Provide this OR origin_lat+origin_lng.",
+        },
+        origin_lat: {
+          type: "number",
+          description:
+            "Origin latitude. Provide this AND origin_lng (or use origin_address).",
+        },
+        origin_lng: {
+          type: "number",
+          description:
+            "Origin longitude. Provide this AND origin_lat (or use origin_address).",
+        },
+        destination_address: {
+          type: "string",
+          description:
+            "Destination address string. Provide this OR destination_lat+destination_lng.",
+        },
+        destination_lat: {
+          type: "number",
+          description:
+            "Destination latitude. Provide this AND destination_lng (or use destination_address).",
+        },
+        destination_lng: {
+          type: "number",
+          description:
+            "Destination longitude. Provide this AND destination_lat (or use destination_address).",
+        },
+        mode: {
+          type: "string",
+          description: 'Travel mode: "driving" | "walking" | "bicycling" | "transit".',
+        },
+      },
+      required: [],
+    },
+  },
+] as const;
 
 // Per docs: input 16-bit PCM, 16kHz mono; output audio typically 24kHz.
 const SEND_SAMPLE_RATE = 16000;
@@ -117,6 +218,33 @@ async function fetchEphemeralToken(): Promise<string> {
     throw new Error(data.error || "Failed to create ephemeral token.");
   }
   return data.token;
+}
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v);
+}
+
+function toLatLng(value: unknown): MapLatLng | null {
+  if (!value || typeof value !== "object") return null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const lat = (value as any).lat;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const lng = (value as any).lng;
+  if (!isFiniteNumber(lat) || !isFiniteNumber(lng)) return null;
+  return { lat, lng };
+}
+
+async function postJson<T>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+  });
+  const data = (await res.json().catch(() => ({}))) as T & { error?: string };
+  if (!res.ok) {
+    throw new Error(data?.error || `Request failed (${res.status})`);
+  }
+  return data as T;
 }
 
 export default function GeminiLiveMic() {
@@ -234,12 +362,26 @@ export default function GeminiLiveMic() {
               response_modalities: ["AUDIO"],
               speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Orus" } } }
             },
+            // Enable function tools (Google Maps) for live sessions.
+            tools: [{ function_declarations: MAPS_FUNCTION_DECLARATIONS }],
+            tool_config: {
+              function_calling_config: { mode: "AUTO" },
+            },
             // Opt-in: receive transcriptions for input and output audio.
             input_audio_transcription: {},
             output_audio_transcription: {},
             system_instruction: {
               role: "system",
-              parts: [{ text: "You are a helpful and friendly AI assistant." }],
+              parts: [
+                {
+                  text: [
+                    "You are a helpful and friendly AI assistant.",
+                    "You have access to Google Maps tools for geocoding, places search, and directions.",
+                    "When you need real-world location info, call the appropriate maps_* tool instead of guessing.",
+                    "If the user’s location is ambiguous, ask a brief follow-up question.",
+                  ].join("\n"),
+                },
+              ],
             },
           },
         };
@@ -264,6 +406,129 @@ export default function GeminiLiveMic() {
               ? evt.data
               : await (evt.data as Blob).text();
           const msg = JSON.parse(data);
+
+          const toolCall =
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (msg as any).toolCall ??
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (msg as any).tool_call;
+          const functionCalls: GeminiFunctionCall[] | undefined =
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (toolCall as any)?.functionCalls ??
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (toolCall as any)?.function_calls;
+
+          if (Array.isArray(functionCalls) && functionCalls.length) {
+            const runTool = async (name: string, args: unknown) => {
+              if (name === "maps_geocode") {
+                const address =
+                  typeof (args as { address?: unknown } | undefined)?.address === "string"
+                    ? (args as { address: string }).address
+                    : "";
+                return await postJson("/api/maps/geocode", { address });
+              }
+
+              if (name === "maps_search_places") {
+                const a = args as
+                  | {
+                      query?: unknown;
+                      location_lat?: unknown;
+                      location_lng?: unknown;
+                      radius_meters?: unknown;
+                      max_results?: unknown;
+                      // Back-compat if model sends camelCase anyway
+                      radiusMeters?: unknown;
+                      maxResults?: unknown;
+                    }
+                  | undefined;
+                const query = typeof a?.query === "string" ? a.query : "";
+                const locationLat = isFiniteNumber(a?.location_lat) ? a.location_lat : null;
+                const locationLng = isFiniteNumber(a?.location_lng) ? a.location_lng : null;
+                const location =
+                  locationLat !== null && locationLng !== null
+                    ? { lat: locationLat, lng: locationLng }
+                    : null;
+                const radiusMeters = isFiniteNumber(a?.radius_meters)
+                  ? a?.radius_meters
+                  : isFiniteNumber(a?.radiusMeters)
+                    ? a?.radiusMeters
+                  : undefined;
+                const maxResults = isFiniteNumber(a?.max_results)
+                  ? a?.max_results
+                  : isFiniteNumber(a?.maxResults)
+                    ? a?.maxResults
+                    : undefined;
+                return await postJson("/api/maps/places", {
+                  query,
+                  location,
+                  radiusMeters,
+                  maxResults,
+                });
+              }
+
+              if (name === "maps_directions") {
+                const a = args as
+                  | {
+                      origin_address?: unknown;
+                      origin_lat?: unknown;
+                      origin_lng?: unknown;
+                      destination_address?: unknown;
+                      destination_lat?: unknown;
+                      destination_lng?: unknown;
+                      // Back-compat if model sends these anyway
+                      origin?: unknown;
+                      destination?: unknown;
+                      mode?: unknown;
+                    }
+                  | undefined;
+
+                const origin =
+                  typeof a?.origin_address === "string" && a.origin_address.trim()
+                    ? a.origin_address.trim()
+                    : isFiniteNumber(a?.origin_lat) && isFiniteNumber(a?.origin_lng)
+                      ? { lat: a.origin_lat, lng: a.origin_lng }
+                      : typeof a?.origin === "string"
+                        ? a.origin
+                        : toLatLng(a?.origin);
+
+                const destination =
+                  typeof a?.destination_address === "string" &&
+                  a.destination_address.trim()
+                    ? a.destination_address.trim()
+                    : isFiniteNumber(a?.destination_lat) &&
+                        isFiniteNumber(a?.destination_lng)
+                      ? { lat: a.destination_lat, lng: a.destination_lng }
+                      : typeof a?.destination === "string"
+                        ? a.destination
+                        : toLatLng(a?.destination);
+                const mode = typeof a?.mode === "string" ? a.mode : undefined;
+
+                return await postJson("/api/maps/directions", { origin, destination, mode });
+              }
+
+              throw new Error(`Unknown tool: ${name}`);
+            };
+
+            const functionResponses = await Promise.all(
+              functionCalls.map(async (fc) => {
+                const id = fc.id || `${Date.now()}-${Math.random()}`;
+                const name = fc.name || "";
+                try {
+                  if (!name) throw new Error("Tool call missing name.");
+                  log("info", `[tool] ${name}…`);
+                  const output = await runTool(name, fc.args);
+                  return { id, name, response: { output } };
+                } catch (e: unknown) {
+                  const message = e instanceof Error ? e.message : String(e);
+                  log("warn", `[tool] ${name || "(unknown)"} failed: ${message}`);
+                  return { id, name, response: { error: message } };
+                }
+              })
+            );
+
+            ws.send(JSON.stringify({ toolResponse: { functionResponses } }));
+            return;
+          }
 
           const readFirstString = (root: unknown, paths: string[][]): string | null => {
             for (const path of paths) {
