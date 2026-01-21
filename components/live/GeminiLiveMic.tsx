@@ -379,14 +379,15 @@ export default function GeminiLiveMic() {
             model: MODEL,
             generation_config: {
               response_modalities: ["AUDIO"],
-              speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Orus" } } }
+              speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } } } //Orus
             },
             // Enable function tools for live sessions.
             tools: [
+              { google_search: {} }, // ✅ built-in web search tool
               {
                 function_declarations: [
                   ...MAPS_FUNCTION_DECLARATIONS,
-                  ...WEB_FUNCTION_DECLARATIONS,
+                  //...WEB_FUNCTION_DECLARATIONS, // web_search using serper.dev
                 ],
               },
             ],
