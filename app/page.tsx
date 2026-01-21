@@ -1,3 +1,4 @@
+import GeminiLiveMic from "@/components/live/GeminiLiveMic";
 import SpeechToText from "@/components/speech/SpeechToText";
 import { TbRobot } from "react-icons/tb";
 
@@ -8,7 +9,8 @@ export default function Home() {
         <h1>ARI</h1>
         <TbRobot />
       </div>
-      <SpeechToText />
+      {/*<SpeechToText />*/}
+      <GeminiLiveMic />
     </div>
   );
 }
