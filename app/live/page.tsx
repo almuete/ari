@@ -1,5 +1,6 @@
 "use client";
 
+import VoiceWave from "@/components/speech/VoiceWave";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type LogItem = { t: number; level: "info" | "warn" | "error"; msg: string };
@@ -484,7 +485,14 @@ export default function LiveMicPage() {
                 cursor: !connected || streaming ? "not-allowed" : "pointer",
               }}
             >
-              Start Mic
+              <VoiceWave
+                active={true}
+                color={streaming ? "#FF9500" : "green"}
+                glow
+                sensitivity={8}
+                size={320}
+                className="rounded-full"
+              />
             </button>
             <button
               onClick={() => void stopMic()}
