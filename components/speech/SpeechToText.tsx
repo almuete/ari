@@ -91,6 +91,8 @@ export default function SpeechToText() {
   // ---- audio refs ----
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const lastSentTranscriptRef = useRef<string>(""); // avoid duplicate calls
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const [audioUnlocked, setAudioUnlocked] = useState(false);
 
   // ---- UI state ----
   const [supported, setSupported] = useState(true);
@@ -139,6 +141,33 @@ export default function SpeechToText() {
       return null;
     });
   };
+
+  // Mobile browsers require a user gesture before audio playback is allowed.
+  // This "unlocks" audio on the user's tap.
+  const unlockAudio = React.useCallback(async () => {
+    if (audioUnlocked) return;
+    if (typeof window === "undefined") return;
+    if (!window.AudioContext) return; // older Safari will still allow <audio> controls
+
+    try {
+      const ctx = audioContextRef.current ?? new AudioContext();
+      audioContextRef.current = ctx;
+      if (ctx.state === "suspended") await ctx.resume();
+
+      // Make a tiny silent sound to satisfy gesture-based policies.
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.01);
+
+      setAudioUnlocked(true);
+    } catch {
+      // If unlocking fails, we still render native controls as fallback.
+    }
+  }, [audioUnlocked]);
 
   const armSilenceResetTimer = () => {
     clearSilenceTimer();
@@ -267,8 +296,8 @@ export default function SpeechToText() {
       const res = await fetch("/api/stt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ transcript: trimmed }),
-        });
+        body: JSON.stringify({ transcript: trimmed }),
+      });
 
       const data = (await res.json()) as SpeechPipelineResponse & {
         error?: string;
@@ -293,10 +322,12 @@ export default function SpeechToText() {
     if (!audioUrl) return;
     const el = audioRef.current;
     if (!el) return;
+    // Only attempt autoplay after the user has interacted at least once.
+    if (!audioUnlocked) return;
     void el.play().catch(() => {
       // ignore autoplay blocks; user can use native controls
     });
-  }, [audioUrl]);
+  }, [audioUrl, audioUnlocked]);
 
   useEffect(() => {
     const hasApi =
@@ -320,6 +351,7 @@ export default function SpeechToText() {
   }, []);
 
   const start = React.useCallback(() => {
+    void unlockAudio(); // user gesture happens here (tap/click)
     setDesiredListening(true);
     shouldBeListeningRef.current = true;
     setError(null);
@@ -334,7 +366,7 @@ export default function SpeechToText() {
     } catch {
       // Some browsers throw if start() is called while already started.
     }
-  }, []);
+  }, [unlockAudio]);
 
   const stopListening = React.useCallback(() => {
     setDesiredListening(false);
@@ -404,7 +436,14 @@ export default function SpeechToText() {
           {audioUrl ? (
             <div className="w-full space-y-2">
               {audioUrl}
-              <audio ref={audioRef} controls src={audioUrl} className="w-full" />
+              <audio
+                ref={audioRef}
+                controls
+                playsInline
+                src={audioUrl}
+                className="w-full"
+                autoPlay
+              />
             </div>
           ) : null}
         </div>
