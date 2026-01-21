@@ -19,6 +19,41 @@ const RECEIVE_SAMPLE_RATE = 24000;
 // Send ~20ms frames (16000 * 0.02 = 320 samples)
 const FRAME_SAMPLES = 320;
 
+function getBossGreeting(now = new Date()): string {
+  const h = now.getHours();
+  const timeOfDay =
+    h < 12 ? "morning" : h < 17 ? "afternoon" : h < 22 ? "evening" : "night";
+
+  const variants = [
+    // Classic
+    `Good ${timeOfDay}, boss.`,
+    `Welcome back, boss. Good ${timeOfDay}.`,
+    `Good ${timeOfDay}, boss. Ready when you are.`,
+
+    // Friendly & warm
+    `Hope you're having a great ${timeOfDay}, boss.`,
+    `Nice to see you, boss. Good ${timeOfDay}.`,
+    `Hey boss, good ${timeOfDay}!`,
+
+    // Professional & confident
+    `All set, boss. Good ${timeOfDay}.`,
+    `Good ${timeOfDay}, boss. Everything is ready.`,
+    `Standing by, boss. Have a great ${timeOfDay}.`,
+
+    // Light motivation
+    `Let’s make this ${timeOfDay} productive, boss.`,
+    `Another strong ${timeOfDay} ahead, boss.`,
+    `Ready to win this ${timeOfDay}, boss?`,
+
+    // Late-night friendly
+    `Still going strong tonight, boss.`,
+    `Good night, boss. Let me know if you need anything.`,
+  ];
+
+  return variants[Math.floor(Math.random() * variants.length)]!;
+}
+
+
 function base64FromArrayBuffer(buf: ArrayBufferLike): string {
   const bytes = new Uint8Array(buf);
   let binary = "";
@@ -363,6 +398,30 @@ export default function GeminiLiveMic() {
     log("info", "Disconnected.");
   };
 
+  const sendUserText = (text: string) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      log("warn", "WebSocket not ready to send text.");
+      return;
+    }
+
+    // Ask the model to respond in audio (configured via setup response_modalities).
+    // This is NOT browser speech synthesis—it's Gemini generating audio.
+    const msg = {
+      clientContent: {
+        turns: [
+          {
+            role: "user",
+            parts: [{ text }],
+          },
+        ],
+        turnComplete: true,
+      },
+    };
+
+    ws.send(JSON.stringify(msg));
+  };
+
   const sendAudioFrame = (pcm16: Int16Array) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -402,6 +461,19 @@ export default function GeminiLiveMic() {
     }
 
     try {
+      // Ensure audio playback is allowed (user gesture happens here).
+      if (playCtxRef.current?.state === "suspended") {
+        await playCtxRef.current.resume();
+      }
+
+      // Trigger an AI greeting right when the user starts the mic.
+      // (This will come back as streamed audio that you can hear.)
+      const greeting = getBossGreeting();
+      log("info", `[ME] (greet) ${greeting}`);
+      sendUserText(
+        `Say exactly one short greeting sentence to me in a warm tone: "${greeting}"`
+      );
+
       log("info", "Requesting microphone permission…");
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -497,6 +569,13 @@ export default function GeminiLiveMic() {
 
     const ctx = playCtxRef.current;
     if (!ctx) return;
+    if (ctx.state === "suspended") {
+      try {
+        await ctx.resume();
+      } catch {
+        // If resume fails (e.g. no user gesture yet), we'll still decode but playback may be muted.
+      }
+    }
 
     const buf = arrayBufferFromBase64(b64);
     const int16 = new Int16Array(buf);
