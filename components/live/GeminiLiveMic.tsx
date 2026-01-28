@@ -275,6 +275,13 @@ export default function GeminiLiveMic() {
 
   const [logs, setLogs] = useState<LogItem[]>([]);
 
+  // Live API does not support stop_sequences in generation_config for the
+  // constrained bidi endpoint. We emulate it client-side.
+  const STOP_SEQUENCES = ["bye", "bye bye", "goodbye", "good bye", "see you later", "see you soon", "see you tomorrow", "see you next time", "see you next week", "see you next month", "see you next year", "see you next decade", "see you next century", "see you next millennium"] as const;
+  const stopSequenceRegexRef = useRef<RegExp>(
+    new RegExp(`\\b(?:${STOP_SEQUENCES.join("|")})\\b`, "i")
+  );
+
   const wsRef = useRef<WebSocket | null>(null);
   const lastInputTranscriptRef = useRef<string>("");
   const lastOutputTranscriptRef = useRef<string>("");
@@ -379,7 +386,8 @@ export default function GeminiLiveMic() {
             model: MODEL,
             generation_config: {
               response_modalities: ["AUDIO"],
-              speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } } } //Orus
+              speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } } }, //Orus
+              thinkingConfig: { thinkingBudget: 1 },
             },
             // Enable function tools for live sessions.
             tools: [
@@ -435,6 +443,20 @@ export default function GeminiLiveMic() {
               ? evt.data
               : await (evt.data as Blob).text();
           const msg = JSON.parse(data);
+
+          const stopSession = async (reason: string) => {
+            log("info", `[stop] ${reason}`);
+
+            try {
+              const curWs = wsRef.current;
+              if (curWs && curWs.readyState === WebSocket.OPEN) {
+                curWs.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
+                curWs.close(1000, "Client stop sequence hit");
+              }
+            } catch {}
+
+            await fullCleanup();
+          };
 
           const toolCall =
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -603,6 +625,11 @@ export default function GeminiLiveMic() {
             lastInputTranscriptRef.current = inputText;
             setInputTranscript(inputText);
             log("info", `[ME] ${inputText}`);
+
+            if (stopSequenceRegexRef.current.test(inputText)) {
+              await stopSession(`User said stop sequence ("${STOP_SEQUENCES.join(", ")}")`);
+              return;
+            }
           }
 
           const outputText = readFirstString(msg, [
@@ -636,6 +663,11 @@ export default function GeminiLiveMic() {
 
             const history = outputHistoryRef.current.join("\n\n");
             setOutputTranscript(history ? `${history}\n\n${outputText}` : outputText);
+
+            if (stopSequenceRegexRef.current.test(outputText)) {
+              await stopSession(`AI said stop sequence ("${STOP_SEQUENCES.join(", ")}")`);
+              return;
+            }
           }
 
           if (msg.serverContent?.modelTurn?.parts?.length) {
@@ -938,7 +970,7 @@ export default function GeminiLiveMic() {
             </span>
           </div>
 
-        <div className="relative">
+        <div className="relative w-sm">
           
           <div className="border border-gray-200 rounded-md p-2">
             {logs.length === 0 ? (
@@ -959,7 +991,7 @@ export default function GeminiLiveMic() {
 
           
 
-          <div className="text-right absolute -top-2 -right-2 ">
+          <div className="text-right absolute -top-4 -right-4 ">
             <button
               onClick={() => setLogs([])}
               className="cursor-pointer text-right bg-white rounded-full p-2 border border-gray-200"
