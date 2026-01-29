@@ -5,9 +5,17 @@ import { BiRefresh } from "react-icons/bi";
 import { useGeminiLiveSession } from "@/components/live/gemini/useGeminiLiveSession";
 
 export default function GeminiLiveMic() {
-  const { connected, streaming, logs, clearLogs, startMic, stopMic } =
-    useGeminiLiveSession({ autoConnect: true });
-
+  const {
+    connected,
+    streaming,
+    goAwayTimeLeftMs,
+    goAwayTimeLeftSource,
+    lastServerMessageType,
+    logs,
+    clearLogs,
+    startMic,
+    stopMic,
+  } = useGeminiLiveSession({ autoConnect: true });
   return (
     <div>
       <div className="relative ">
@@ -33,6 +41,37 @@ export default function GeminiLiveMic() {
         </div>
 
         <div className="relative w-sm">
+          {lastServerMessageType && (
+            <div className="mb-2 text-xs text-gray-400">
+              last server msg: <span className="font-mono">{lastServerMessageType}</span>
+            </div>
+          )}
+
+          <div className="mb-2 text-xs text-gray-400">
+            timeLeftMs:{" "}
+            <span className="font-mono">{String(goAwayTimeLeftMs)}</span>
+            {goAwayTimeLeftSource && (
+              <>
+                {" "}
+                (<span className="font-mono">{goAwayTimeLeftSource}</span>)
+              </>
+            )}
+          </div>
+
+          {goAwayTimeLeftMs == null ? (
+          <div className="mb-2 text-xs text-gray-400">
+              No server <span className="font-mono">goAway.timeLeft</span> received yet (banner will
+              appear when it does).
+            </div>
+          ) : (
+            <div className="mb-2 text-xs text-gray-400">
+              {goAwayTimeLeftSource === "server" ? "Server goAway: " : "Session time left: "}
+              <span className="font-mono">
+                {Math.max(0, Math.ceil(goAwayTimeLeftMs / 1000))}s
+              </span>
+            </div>
+          )}
+
           <div className="border border-gray-200 rounded-md p-2">
             {logs.length === 0 ? (
               <div>—</div>

@@ -2,6 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   DEFAULT_SYSTEM_INSTRUCTION_TEXT,
   FRAME_SAMPLES,
+  GO_AWAY_AUTO_RECONNECT_DEFAULT,
+  GO_AWAY_RECONNECT_BEFORE_MS_DEFAULT,
+  SESSION_MAX_DURATION_MS_DEFAULT,
   MAPS_FUNCTION_DECLARATIONS,
   MODEL,
   RECEIVE_SAMPLE_RATE,
@@ -19,10 +22,54 @@ import { getBossGreeting } from "./greeting";
 
 export type UseGeminiLiveSessionOptions = {
   autoConnect?: boolean;
+  goAwayAutoReconnect?: boolean;
+  goAwayReconnectBeforeMs?: number;
+  sessionMaxDurationMs?: number;
 };
 
+function durationToMs(duration: unknown): number | null {
+  // google.protobuf.Duration JSON mapping is typically a string like "3.5s"
+  if (typeof duration === "string") {
+    const m = /^(-?\d+)(?:\.(\d+))?s$/.exec(duration.trim());
+    if (!m) return null;
+    const whole = Number(m[1]);
+    const frac = m[2] ? Number(`0.${m[2]}`) : 0;
+    if (!Number.isFinite(whole) || !Number.isFinite(frac)) return null;
+    return Math.round((whole + frac) * 1000);
+  }
+
+  // Some clients may provide an object form: { seconds, nanos }
+  if (duration && typeof duration === "object") {
+    const d = duration as { seconds?: number | string; nanos?: number };
+    const seconds = typeof d.seconds === "string" ? Number(d.seconds) : d.seconds ?? 0;
+    const nanos = typeof d.nanos === "number" ? d.nanos : 0;
+    if (!Number.isFinite(seconds) || !Number.isFinite(nanos)) return null;
+    return Math.round(seconds * 1000 + nanos / 1e6);
+  }
+
+  return null;
+}
+
+function detectServerMessageType(msg: unknown): string {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const m = msg as any;
+  if (!m || typeof m !== "object") return "unknown";
+  if (m.setupComplete || m.setup_complete) return "setupComplete";
+  if (m.serverContent || m.server_content) return "serverContent";
+  if (m.toolCall || m.tool_call) return "toolCall";
+  if (m.toolCallCancellation || m.tool_call_cancellation) return "toolCallCancellation";
+  if (m.sessionResumptionUpdate || m.session_resumption_update) return "sessionResumptionUpdate";
+  if (m.goAway || m.go_away) return "goAway";
+  return "unknown";
+}
+
 export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) {
-  const { autoConnect = true } = options;
+  const {
+    autoConnect = true,
+    goAwayAutoReconnect = GO_AWAY_AUTO_RECONNECT_DEFAULT,
+    goAwayReconnectBeforeMs = GO_AWAY_RECONNECT_BEFORE_MS_DEFAULT,
+    sessionMaxDurationMs = SESSION_MAX_DURATION_MS_DEFAULT,
+  } = options;
 
   const [connected, setConnected] = useState(false);
   const [streaming, setStreaming] = useState(false);
@@ -32,9 +79,20 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
 
   const [logs, setLogs] = useState<LogItem[]>([]);
 
+  const [goAwayTimeLeftMs, setGoAwayTimeLeftMs] = useState<number | null>(null);
+  const [goAwayTimeLeftSource, setGoAwayTimeLeftSource] = useState<"server" | "estimated" | null>(
+    null
+  );
+  const [lastServerMessageType, setLastServerMessageType] = useState<string>("");
+
   const stopSequenceRegexRef = useRef<RegExp>(createStopSequenceRegex());
 
   const wsRef = useRef<WebSocket | null>(null);
+  const connectRef = useRef<(() => Promise<void>) | null>(null);
+  const goAwaySeenRef = useRef(false);
+  const sessionStartAtRef = useRef<number | null>(null);
+  const sessionCountdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sessionReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastInputTranscriptRef = useRef<string>("");
   const lastOutputTranscriptRef = useRef<string>("");
   const outputHistoryRef = useRef<string[]>([]);
@@ -52,21 +110,53 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
   const playCtxRef = useRef<AudioContext | null>(null);
   const playTimeRef = useRef<number>(0);
 
+  const goAwayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const goAwayCountdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const log = useCallback((level: LogItem["level"], msg: string) => {
     setLogs((prev) => [{ t: Date.now(), level, msg }, ...prev].slice(0, 200));
   }, []);
 
   const clearLogs = useCallback(() => setLogs([]), []);
 
+  const clearGoAwayTimers = useCallback(() => {
+    if (goAwayTimerRef.current) {
+      clearTimeout(goAwayTimerRef.current);
+      goAwayTimerRef.current = null;
+    }
+    if (goAwayCountdownRef.current) {
+      clearInterval(goAwayCountdownRef.current);
+      goAwayCountdownRef.current = null;
+    }
+  }, []);
+
+  const clearSessionTimers = useCallback(() => {
+    if (sessionCountdownRef.current) {
+      clearInterval(sessionCountdownRef.current);
+      sessionCountdownRef.current = null;
+    }
+    if (sessionReconnectTimerRef.current) {
+      clearTimeout(sessionReconnectTimerRef.current);
+      sessionReconnectTimerRef.current = null;
+    }
+    sessionStartAtRef.current = null;
+  }, []);
+
+  const resetGoAway = useCallback(() => {
+    clearGoAwayTimers();
+    setGoAwayTimeLeftMs(null);
+    setGoAwayTimeLeftSource(null);
+  }, [clearGoAwayTimers]);
+
   const cleanupAudio = useCallback(async () => {
     setStreaming(false);
 
     try {
       processorRef.current?.disconnect();
-    } catch {}
+    } catch { }
     try {
       sourceNodeRef.current?.disconnect();
-    } catch {}
+    } catch { }
 
     processorRef.current = null;
     sourceNodeRef.current = null;
@@ -79,7 +169,7 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
     if (audioCtxRef.current) {
       try {
         await audioCtxRef.current.close();
-      } catch {}
+      } catch { }
       audioCtxRef.current = null;
     }
   }, []);
@@ -88,22 +178,24 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
     setConnected(false);
     try {
       wsRef.current?.close();
-    } catch {}
+    } catch { }
     wsRef.current = null;
   }, []);
 
   const fullCleanup = useCallback(async () => {
+    resetGoAway();
+    clearSessionTimers();
     await cleanupAudio();
     cleanupWs();
 
     if (playCtxRef.current) {
       try {
         await playCtxRef.current.close();
-      } catch {}
+      } catch { }
       playCtxRef.current = null;
       playTimeRef.current = 0;
     }
-  }, [cleanupAudio, cleanupWs]);
+  }, [cleanupAudio, cleanupWs, resetGoAway, clearSessionTimers]);
 
   useEffect(() => {
     return () => {
@@ -223,6 +315,54 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
           typeof evt.data === "string" ? evt.data : await (evt.data as Blob).text();
         const msg = JSON.parse(data) as unknown;
 
+        setLastServerMessageType(detectServerMessageType(msg));
+
+        // Handle server "goAway" (time until forced disconnect).
+        // Ref: https://ai.google.dev/api/live#GoAway
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const maybeGoAway = (msg as any)?.goAway ?? (msg as any)?.go_away;
+        if (maybeGoAway?.timeLeft || maybeGoAway?.time_left) {
+          goAwaySeenRef.current = true;
+          const timeLeft = maybeGoAway.timeLeft ?? maybeGoAway.time_left;
+          const ms = durationToMs(timeLeft);
+          if (ms != null) {
+            clearGoAwayTimers();
+            setGoAwayTimeLeftMs(ms);
+            setGoAwayTimeLeftSource("server");
+            log("warn", `Server GoAway: disconnecting in ${Math.max(0, ms)}ms`);
+
+            // Keep a lightweight countdown so UI can reflect remaining time.
+            const start = Date.now();
+            goAwayCountdownRef.current = setInterval(() => {
+              const elapsed = Date.now() - start;
+              setGoAwayTimeLeftMs(() => Math.max(0, ms - elapsed));
+            }, 250);
+
+            if (goAwayAutoReconnect) {
+              const delay = Math.max(0, ms - Math.max(0, goAwayReconnectBeforeMs));
+              goAwayTimerRef.current = setTimeout(() => {
+                void (async () => {
+                  log("info", "Reconnecting (server GoAway)...");
+                  // IMPORTANT: don't call fullCleanup() here, because it resets
+                  // goAwayTimeLeftMs back to null and the UI may never show it.
+                  clearGoAwayTimers();
+                  await cleanupAudio();
+                  cleanupWs();
+                  const doConnect = connectRef.current;
+                  if (!doConnect) {
+                    log("warn", "Reconnect skipped: connect() not ready.");
+                    return;
+                  }
+                  await doConnect();
+                })();
+              }, delay);
+            }
+          } else {
+            log("warn", "Server GoAway received, but timeLeft format was unrecognized.");
+          }
+          return;
+        }
+
         const stopSession = async (reason: string) => {
           log("info", `[stop] ${reason}`);
 
@@ -232,7 +372,7 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
               curWs.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
               curWs.close(1000, "Client stop sequence hit");
             }
-          } catch {}
+          } catch { }
 
           await fullCleanup();
         };
@@ -347,7 +487,19 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
         log("error", `Failed to parse message: ${message}`);
       }
     },
-    [fullCleanup, handleToolCalls, log, playPcmBase64]
+    [
+      clearGoAwayTimers,
+      cleanupAudio,
+      cleanupWs,
+      detectServerMessageType,
+      fullCleanup,
+      goAwayAutoReconnect,
+      goAwayReconnectBeforeMs,
+      handleToolCalls,
+      log,
+      playPcmBase64,
+      setGoAwayTimeLeftSource,
+    ]
   );
 
   const connect = useCallback(async () => {
@@ -372,6 +524,45 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
       ws.onopen = () => {
         log("info", "WebSocket open. Sending setup…");
         setConnected(true);
+        resetGoAway();
+        goAwaySeenRef.current = false;
+        clearSessionTimers();
+
+        // Start an estimated session countdown so UI always has "time left",
+        // even if the server never emits `goAway`.
+        sessionStartAtRef.current = Date.now();
+        setGoAwayTimeLeftSource("estimated");
+        setGoAwayTimeLeftMs(sessionMaxDurationMs);
+
+        sessionCountdownRef.current = setInterval(() => {
+          // If we already got server goAway, don't overwrite it.
+          if (goAwaySeenRef.current) return;
+          const start = sessionStartAtRef.current;
+          if (!start) return;
+          const elapsed = Date.now() - start;
+          const remaining = Math.max(0, sessionMaxDurationMs - elapsed);
+          setGoAwayTimeLeftMs(remaining);
+          setGoAwayTimeLeftSource("estimated");
+        }, 250);
+
+        // Optional proactive reconnect based on estimated max session duration.
+        if (goAwayAutoReconnect) {
+          const delay = Math.max(0, sessionMaxDurationMs - Math.max(0, goAwayReconnectBeforeMs));
+          sessionReconnectTimerRef.current = setTimeout(() => {
+            void (async () => {
+              // If server provided a goAway, let that path handle reconnect timing.
+              if (goAwaySeenRef.current) return;
+              log("info", "Reconnecting (estimated session limit)...");
+              clearGoAwayTimers();
+              clearSessionTimers();
+              await cleanupAudio();
+              cleanupWs();
+              const doConnect = connectRef.current;
+              if (!doConnect) return;
+              await doConnect();
+            })();
+          }, delay);
+        }
 
         const setupMsg = {
           setup: {
@@ -381,7 +572,7 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
               speechConfig: {
                 voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } },
               }, // Orus
-              thinkingConfig: { thinkingBudget: 1 },
+              thinkingConfig: { thinkingBudget: 100 },
             },
             tools: [
               { google_search: {} },
@@ -413,6 +604,10 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
 
       ws.onclose = (ev) => {
         log("warn", `WebSocket closed (${ev.code}) ${ev.reason || ""}`.trim());
+        if (!goAwaySeenRef.current) {
+          log("warn", "Closed without receiving server goAway (timeLeft not provided).");
+        }
+        clearSessionTimers();
         setConnected(false);
         setStreaming(false);
       };
@@ -429,7 +624,22 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
       log("error", message);
       cleanupWs();
     }
-  }, [cleanupWs, handleMessage, log]);
+  }, [
+    cleanupAudio,
+    cleanupWs,
+    clearGoAwayTimers,
+    clearSessionTimers,
+    goAwayAutoReconnect,
+    goAwayReconnectBeforeMs,
+    handleMessage,
+    log,
+    resetGoAway,
+    sessionMaxDurationMs,
+  ]);
+
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
 
   useEffect(() => {
     if (!autoConnect) return;
@@ -559,6 +769,9 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
     streaming,
     inputTranscript,
     outputTranscript,
+    goAwayTimeLeftMs,
+    goAwayTimeLeftSource,
+    lastServerMessageType,
     logs,
     clearLogs,
     connect,

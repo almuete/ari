@@ -156,3 +156,13 @@ export const DEFAULT_SYSTEM_INSTRUCTION_TEXT = [
   "If the user’s location is ambiguous, ask a brief follow-up question.",
 ].join("\n");
 
+// When server sends `goAway.timeLeft`, reconnect slightly before it disconnects.
+// Ref: https://ai.google.dev/api/live#GoAway
+export const GO_AWAY_AUTO_RECONNECT_DEFAULT = true;
+export const GO_AWAY_RECONNECT_BEFORE_MS_DEFAULT = 2500;
+
+// Many sessions won’t receive `goAway` (depends on endpoint/close reason).
+// This provides an estimated countdown so the UI can still show time left.
+// Docs mention Live sessions are typically limited to ~10 minutes.
+export const SESSION_MAX_DURATION_MS_DEFAULT = 10 * 60 * 1000;
+
