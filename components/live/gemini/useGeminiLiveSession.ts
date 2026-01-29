@@ -98,6 +98,10 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
   const lastInputTranscriptRef = useRef<string>("");
   const lastOutputTranscriptRef = useRef<string>("");
   const outputHistoryRef = useRef<string[]>([]);
+  const modelRespondingRef = useRef<boolean>(false);
+  const pendingStopReasonRef = useRef<string | null>(null);
+  const stopInProgressRef = useRef<boolean>(false);
+  const deferredStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const micStreamRef = useRef<MediaStream | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -190,6 +194,12 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
   const fullCleanup = useCallback(async () => {
     resetGoAway();
     clearSessionTimers();
+    pendingStopReasonRef.current = null;
+    modelRespondingRef.current = false;
+    if (deferredStopTimerRef.current) {
+      clearTimeout(deferredStopTimerRef.current);
+      deferredStopTimerRef.current = null;
+    }
     await cleanupAudio();
     cleanupWs();
 
@@ -272,6 +282,65 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
     mutePlaybackUntilRef.current = Date.now() + 750;
     log("info", `[audio] stopped: ${reason}`);
   }, [log]);
+
+  const gracefulStopNow = useCallback(
+    async (reason: string) => {
+      if (stopInProgressRef.current) return;
+      stopInProgressRef.current = true;
+
+      log("info", `[stop] ${reason}`);
+
+      try {
+        const curWs = wsRef.current;
+        if (curWs && curWs.readyState === WebSocket.OPEN) {
+          curWs.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
+          curWs.close(1000, "Client stop sequence hit");
+        }
+      } catch { }
+
+      await fullCleanup();
+    },
+    [fullCleanup, log]
+  );
+
+  const requestStopAfterModelReply = useCallback(
+    async (reason: string) => {
+      // Defer socket close/cleanup until the model has finished its current reply,
+      // and any already-buffered playback has finished.
+      pendingStopReasonRef.current = reason;
+
+      // If the model isn't responding, we can stop once queued audio finishes.
+      if (!modelRespondingRef.current) {
+        const ctx = playCtxRef.current;
+        const delayMs =
+          ctx ? Math.max(0, (playTimeRef.current - ctx.currentTime) * 1000) + 50 : 0;
+
+        if (deferredStopTimerRef.current) clearTimeout(deferredStopTimerRef.current);
+        if (delayMs > 0) {
+          deferredStopTimerRef.current = setTimeout(() => {
+            const r = pendingStopReasonRef.current;
+            pendingStopReasonRef.current = null;
+            if (r) void gracefulStopNow(r);
+          }, delayMs);
+          return;
+        }
+
+        const r = pendingStopReasonRef.current;
+        pendingStopReasonRef.current = null;
+        if (r) await gracefulStopNow(r);
+        return;
+      }
+
+      // Safety: if the server never marks turn-complete, don't hang forever.
+      if (deferredStopTimerRef.current) clearTimeout(deferredStopTimerRef.current);
+      deferredStopTimerRef.current = setTimeout(() => {
+        const r = pendingStopReasonRef.current;
+        pendingStopReasonRef.current = null;
+        if (r) void gracefulStopNow(`${r} (timeout waiting for turnComplete)`);
+      }, 12_000);
+    },
+    [gracefulStopNow]
+  );
 
   const interruptServerGeneration = useCallback(
     (userText: string) => {
@@ -432,20 +501,6 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
           return;
         }
 
-        const stopSession = async (reason: string) => {
-          log("info", `[stop] ${reason}`);
-
-          try {
-            const curWs = wsRef.current;
-            if (curWs && curWs.readyState === WebSocket.OPEN) {
-              curWs.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
-              curWs.close(1000, "Client stop sequence hit");
-            }
-          } catch { }
-
-          await fullCleanup();
-        };
-
         const functionCalls = extractFunctionCalls(msg);
         if (functionCalls?.length) {
           await handleToolCalls(ws, functionCalls);
@@ -480,7 +535,9 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
           }
 
           if (stopSequenceRegexRef.current.test(inputText)) {
-            await stopSession(`User said stop sequence ("${STOP_SEQUENCES.join(", ")}")`);
+            await requestStopAfterModelReply(
+              `User said stop sequence ("${STOP_SEQUENCES.join(", ")}")`
+            );
             return;
           }
         }
@@ -514,14 +571,28 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
           }
 
           if (stopSequenceRegexRef.current.test(outputText)) {
-            await stopSession(`AI said stop sequence ("${STOP_SEQUENCES.join(", ")}")`);
+            await requestStopAfterModelReply(
+              `AI said stop sequence ("${STOP_SEQUENCES.join(", ")}")`
+            );
             return;
           }
         }
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const m = msg as any;
+        const serverTurnComplete = Boolean(
+          m.serverContent?.turnComplete ??
+          m.serverContent?.turn_complete ??
+          m.server_content?.turnComplete ??
+          m.server_content?.turn_complete ??
+          m.serverContent?.modelTurn?.turnComplete ??
+          m.serverContent?.modelTurn?.turn_complete ??
+          m.server_content?.modelTurn?.turnComplete ??
+          m.server_content?.modelTurn?.turn_complete
+        );
+
         if (m.serverContent?.modelTurn?.parts?.length) {
+          modelRespondingRef.current = true;
           if (!outputText) {
             const combined = m.serverContent.modelTurn.parts
               .map((p: unknown) => {
@@ -573,6 +644,25 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
           // Docs: if client is playing in real-time, this is a good signal to stop and empty playback.
           stopPlaybackNow("server indicated interruption (barge-in)");
         }
+
+        if (serverTurnComplete) {
+          modelRespondingRef.current = false;
+
+          // If a stop was requested during the model reply, stop once playback finishes.
+          const pending = pendingStopReasonRef.current;
+          if (pending) {
+            const ctx = playCtxRef.current;
+            const delayMs =
+              ctx ? Math.max(0, (playTimeRef.current - ctx.currentTime) * 1000) + 50 : 0;
+
+            if (deferredStopTimerRef.current) clearTimeout(deferredStopTimerRef.current);
+            deferredStopTimerRef.current = setTimeout(() => {
+              const r = pendingStopReasonRef.current;
+              pendingStopReasonRef.current = null;
+              if (r) void gracefulStopNow(r);
+            }, delayMs);
+          }
+        }
       } catch (e: unknown) {
         const message = e instanceof Error ? e.message : String(e);
         log("error", `Failed to parse message: ${message}`);
@@ -586,6 +676,7 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
       goAwayAutoReconnect,
       goAwayReconnectBeforeMs,
       handleToolCalls,
+      requestStopAfterModelReply,
       log,
       interruptServerGeneration,
       playPcmBase64,
