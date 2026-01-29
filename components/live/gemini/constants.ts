@@ -30,8 +30,20 @@ export const STOP_SEQUENCES = [
   "see you next millennium",
 ] as const;
 
+// Phrases that should INTERRUPT the current model response, but keep the session open.
+// Ref: Live API docs: any `clientContent` message interrupts current model generation.
+export const INTERRUPT_SEQUENCES = ["stop it", "stop talking", "stop speaking"] as const;
+
+function escapeRegexLiteral(s: string) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export function createStopSequenceRegex() {
-  return new RegExp(`\\b(?:${STOP_SEQUENCES.join("|")})\\b`, "i");
+  return new RegExp(`\\b(?:${STOP_SEQUENCES.map(escapeRegexLiteral).join("|")})\\b`, "i");
+}
+
+export function createInterruptSequenceRegex() {
+  return new RegExp(`\\b(?:${INTERRUPT_SEQUENCES.map(escapeRegexLiteral).join("|")})\\b`, "i");
 }
 
 export const MAPS_FUNCTION_DECLARATIONS = [

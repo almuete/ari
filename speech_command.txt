@@ -1,0 +1,25 @@
+Interrupt commands (AI stops talking, session stays open)
+"stop it": Interrupts the current AI response/audio, but keeps the session open so you can continue.
+"stop talking": Same—cuts off the AI mid-response without ending the session.
+"stop speaking": Same—immediately interrupts the AI response/audio, session remains open.
+Stop/end commands (ends the session)
+
+Each of these triggers a full session stop/cleanup (disconnects/ends the live session):
+"bye": Ends the session.
+"bye bye": Ends the session.
+"goodbye": Ends the session.
+"good bye": Ends the session.
+"see you later": Ends the session.
+"see you soon": Ends the session.
+"see you tomorrow": Ends the session.
+"see you next time": Ends the session.
+"see you next week": Ends the session.
+"see you next month": Ends the session.
+"see you next year": Ends the session.
+"see you next decade": Ends the session.
+"see you next century": Ends the session.
+"see you next millennium": Ends the session.
+
+Notes (important behavior)
+Case-insensitive + word-boundary matching: “Bye!”, “GOODBYE”, etc. should match.
+Also triggers if the AI says it: if the AI’s transcript contains “bye/goodbye/…”, your app will also stop the session.

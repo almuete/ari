@@ -11,6 +11,7 @@ import {
   SEND_SAMPLE_RATE,
   STOP_SEQUENCES,
   WS_ENDPOINT,
+  createInterruptSequenceRegex,
   createStopSequenceRegex,
 } from "./constants";
 import { arrayBufferFromBase64, base64FromArrayBuffer, floatToInt16PCM, resampleFloat32 } from "./audio";
@@ -86,6 +87,7 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
   const [lastServerMessageType, setLastServerMessageType] = useState<string>("");
 
   const stopSequenceRegexRef = useRef<RegExp>(createStopSequenceRegex());
+  const interruptSequenceRegexRef = useRef<RegExp>(createInterruptSequenceRegex());
 
   const wsRef = useRef<WebSocket | null>(null);
   const connectRef = useRef<(() => Promise<void>) | null>(null);
@@ -109,6 +111,9 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
   // Output playback
   const playCtxRef = useRef<AudioContext | null>(null);
   const playTimeRef = useRef<number>(0);
+  const playSourcesRef = useRef<AudioBufferSourceNode[]>([]);
+  const mutePlaybackUntilRef = useRef<number>(0);
+  const suppressServerOutputRef = useRef<boolean>(false);
 
   const goAwayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const goAwayCountdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -244,7 +249,65 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
     ws.send(JSON.stringify(msg));
   }, []);
 
+  const stopPlaybackNow = useCallback((reason: string) => {
+    const ctx = playCtxRef.current;
+    if (ctx) {
+      // Reset the scheduled playback timeline so new audio starts immediately.
+      playTimeRef.current = ctx.currentTime;
+    }
+
+    // Stop any already-scheduled sources.
+    const sources = playSourcesRef.current;
+    playSourcesRef.current = [];
+    for (const s of sources) {
+      try {
+        s.stop(0);
+      } catch { }
+      try {
+        s.disconnect();
+      } catch { }
+    }
+
+    // Some audio chunks might still arrive in-flight after interruption. Briefly mute playback.
+    mutePlaybackUntilRef.current = Date.now() + 750;
+    log("info", `[audio] stopped: ${reason}`);
+  }, [log]);
+
+  const interruptServerGeneration = useCallback(
+    (userText: string) => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        stopPlaybackNow("interrupt requested while socket not open");
+        log("warn", "WebSocket not ready to interrupt generation.");
+        return;
+      }
+
+      // Per Live API docs: sending any `clientContent` message interrupts current model generation.
+      // We intentionally set turnComplete=false so we interrupt without starting a new response.
+      const msg = {
+        clientContent: {
+          turns: [
+            {
+              role: "user",
+              parts: [{ text: userText }],
+            },
+          ],
+          turnComplete: false,
+        },
+      };
+
+      // Also suppress any trailing in-flight audio/text from the interrupted turn.
+      suppressServerOutputRef.current = true;
+      stopPlaybackNow(`user interrupt ("${userText}")`);
+      ws.send(JSON.stringify(msg));
+      log("warn", `[interrupt] Sent clientContent (turnComplete=false): "${userText}"`);
+    },
+    [log, stopPlaybackNow]
+  );
+
   const playPcmBase64 = useCallback(async (b64: string, mimeType: string) => {
+    if (Date.now() < mutePlaybackUntilRef.current) return;
+
     const rateMatch = /rate=(\d+)/.exec(mimeType);
     const rate = rateMatch ? Number(rateMatch[1]) : RECEIVE_SAMPLE_RATE;
 
@@ -274,6 +337,12 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
     const source = ctx.createBufferSource();
     source.buffer = audioBuffer;
     source.connect(ctx.destination);
+
+    // Track active sources so we can cut them off immediately (e.g. when user says "stop it").
+    playSourcesRef.current.push(source);
+    source.onended = () => {
+      playSourcesRef.current = playSourcesRef.current.filter((s) => s !== source);
+    };
 
     const now = ctx.currentTime;
     const startAt = Math.max(now, playTimeRef.current);
@@ -396,6 +465,20 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
           setInputTranscript(inputText);
           log("info", `[ME] ${inputText}`);
 
+          // Re-enable output as soon as the user starts a new non-interrupt utterance.
+          if (
+            suppressServerOutputRef.current &&
+            !interruptSequenceRegexRef.current.test(inputText)
+          ) {
+            suppressServerOutputRef.current = false;
+            mutePlaybackUntilRef.current = 0;
+          }
+
+          if (interruptSequenceRegexRef.current.test(inputText)) {
+            interruptServerGeneration(inputText);
+            return;
+          }
+
           if (stopSequenceRegexRef.current.test(inputText)) {
             await stopSession(`User said stop sequence ("${STOP_SEQUENCES.join(", ")}")`);
             return;
@@ -411,7 +494,9 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
           ["server_content", "output_transcription", "text"],
         ]);
         if (outputText && outputText !== lastOutputTranscriptRef.current) {
-          log("info", `[ARI] ${outputText}`);
+          if (!suppressServerOutputRef.current) {
+            log("info", `[ARI] ${outputText}`);
+          }
 
           const prev = lastOutputTranscriptRef.current;
           const isContinuation = !prev || outputText.startsWith(prev) || prev.startsWith(outputText);
@@ -423,8 +508,10 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
 
           lastOutputTranscriptRef.current = outputText;
 
-          const history = outputHistoryRef.current.join("\n\n");
-          setOutputTranscript(history ? `${history}\n\n${outputText}` : outputText);
+          if (!suppressServerOutputRef.current) {
+            const history = outputHistoryRef.current.join("\n\n");
+            setOutputTranscript(history ? `${history}\n\n${outputText}` : outputText);
+          }
 
           if (stopSequenceRegexRef.current.test(outputText)) {
             await stopSession(`AI said stop sequence ("${STOP_SEQUENCES.join(", ")}")`);
@@ -473,7 +560,9 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
             if (inline?.data && inline?.mimeType) {
               const mime: string = inline.mimeType;
               if (mime.startsWith("audio/pcm")) {
-                await playPcmBase64(inline.data, mime);
+                if (!suppressServerOutputRef.current) {
+                  await playPcmBase64(inline.data, mime);
+                }
               }
             }
           }
@@ -481,6 +570,8 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
 
         if (m.serverContent?.interrupted) {
           log("info", "Model interrupted (barge-in).");
+          // Docs: if client is playing in real-time, this is a good signal to stop and empty playback.
+          stopPlaybackNow("server indicated interruption (barge-in)");
         }
       } catch (e: unknown) {
         const message = e instanceof Error ? e.message : String(e);
@@ -491,14 +582,15 @@ export function useGeminiLiveSession(options: UseGeminiLiveSessionOptions = {}) 
       clearGoAwayTimers,
       cleanupAudio,
       cleanupWs,
-      detectServerMessageType,
       fullCleanup,
       goAwayAutoReconnect,
       goAwayReconnectBeforeMs,
       handleToolCalls,
       log,
+      interruptServerGeneration,
       playPcmBase64,
       setGoAwayTimeLeftSource,
+      stopPlaybackNow,
     ]
   );
 
